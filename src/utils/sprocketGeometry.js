@@ -93,7 +93,10 @@ export function arcCommand(rx, ry, xAxisRotation, largeArcFlag, sweepFlag, x, y)
 }
 
 /**
- * Generate the complete sprocket tooth profile with curved gullets
+ * Generate the complete sprocket tooth profile with proper protruding teeth
+ *
+ * Film sprocket teeth are pins that extend outward to engage with film perforations.
+ * The tooth height should be significant enough to properly engage the film.
  *
  * @param {Object} params - Sprocket parameters
  * @param {number} params.numTeeth - Number of teeth
@@ -110,93 +113,105 @@ export function generateSprocketPath(params) {
   }
 
   const pitchDiameter = calculatePitchDiameter(pitch, numTeeth);
-  const outerDiameter = calculateOuterDiameter(pitchDiameter, rollerDiameter);
-  const rootDiameter = calculateRootDiameter(pitchDiameter, rollerDiameter);
-
   const pitchRadius = pitchDiameter / 2;
-  const outerRadius = outerDiameter / 2;
-  const rootRadius = rootDiameter / 2;
   const rollerRadius = rollerDiameter / 2;
+
+  // Tooth height - teeth should extend well beyond the base
+  // Typically 1.5-2x the roller diameter for proper film engagement
+  const toothHeight = rollerDiameter * 2.0;
+
+  // Base radius is where the teeth start (below pitch circle)
+  const baseRadius = pitchRadius - rollerRadius;
+
+  // Outer radius is the tip of the teeth
+  const outerRadius = pitchRadius + toothHeight - rollerRadius;
+
+  // Root radius for the gullet curve
+  const rootRadius = baseRadius - rollerRadius * 0.3;
+
+  const outerDiameter = outerRadius * 2;
+  const rootDiameter = rootRadius * 2;
 
   const centerX = 0;
   const centerY = 0;
 
-  const toothAngles = calculateToothAngles(numTeeth);
-  const halfToothAngle = Math.PI / numTeeth;
+  const angleStep = (2 * Math.PI) / numTeeth;
 
-  // Calculate the gullet arc parameters
-  // The gullet is a circular arc that seats the roller
-  const gulletDepth = rollerRadius * 0.85; // How deep the gullet goes
-  const gulletRadius = rollerRadius; // Radius matches roller for proper seating
+  // Tooth width at base as a fraction of the angular spacing
+  const toothWidthFraction = 0.35;
+  const halfToothAngle = (angleStep * toothWidthFraction) / 2;
 
   let pathData = '';
 
   for (let i = 0; i < numTeeth; i++) {
-    const angle = toothAngles[i];
-    const nextAngle = toothAngles[(i + 1) % numTeeth];
+    // Angle to the center of this tooth
+    const toothAngle = i * angleStep - Math.PI / 2; // Start from top
 
-    // Calculate key points for this tooth
-    // Tooth tip (outer) - left side
-    const toothTipLeftAngle = angle - halfToothAngle * 0.35;
-    const toothTipLeft = pointOnCircle(centerX, centerY, outerRadius, toothTipLeftAngle);
+    // Angle to the center of the gap (gullet) after this tooth
+    const gulletAngle = toothAngle + angleStep / 2;
 
-    // Tooth tip (outer) - right side
-    const toothTipRightAngle = angle + halfToothAngle * 0.35;
-    const toothTipRight = pointOnCircle(centerX, centerY, outerRadius, toothTipRightAngle);
+    // Tooth base points (where tooth meets the body)
+    const toothBaseLeft = pointOnCircle(centerX, centerY, baseRadius, toothAngle - halfToothAngle);
+    const toothBaseRight = pointOnCircle(centerX, centerY, baseRadius, toothAngle + halfToothAngle);
 
-    // Gullet center point (on pitch circle, between teeth)
-    const gulletCenterAngle = angle + halfToothAngle;
-    const gulletCenter = pointOnCircle(centerX, centerY, pitchRadius, gulletCenterAngle);
+    // Tooth tip points (outer edge of tooth) - slightly narrower than base
+    const tipNarrowFactor = 0.7;
+    const toothTipLeft = pointOnCircle(centerX, centerY, outerRadius, toothAngle - halfToothAngle * tipNarrowFactor);
+    const toothTipRight = pointOnCircle(centerX, centerY, outerRadius, toothAngle + halfToothAngle * tipNarrowFactor);
 
-    // Gullet arc endpoints
-    const gulletStartAngle = gulletCenterAngle - Math.PI * 0.4;
-    const gulletEndAngle = gulletCenterAngle + Math.PI * 0.4;
+    // Gullet (curved bottom between teeth) - sized for roller
+    const gulletCenterRadius = rootRadius + rollerRadius;
+    const gulletCenter = pointOnCircle(centerX, centerY, gulletCenterRadius, gulletAngle);
 
-    // Points where tooth flanks meet the gullet
-    const toothFlankRight = pointOnCircle(
-      gulletCenter.x, gulletCenter.y,
-      gulletRadius,
-      gulletStartAngle
-    );
-
-    const nextToothFlankLeft = pointOnCircle(
-      gulletCenter.x, gulletCenter.y,
-      gulletRadius,
-      gulletEndAngle
-    );
+    // Calculate where the gullet arc intersects with the base circle
+    // The gullet arc should smoothly connect adjacent teeth
+    const gulletArcAngle = Math.asin((baseRadius - gulletCenterRadius) / rollerRadius) || Math.PI * 0.4;
 
     if (i === 0) {
-      // Move to starting point (top of first tooth, left side)
+      // Start at the left side of the first tooth tip
       pathData = `M ${toothTipLeft.x.toFixed(4)} ${toothTipLeft.y.toFixed(4)} `;
     }
 
-    // Draw tooth tip arc (curved top of tooth)
+    // Draw rounded tooth tip
     pathData += arcCommand(
-      outerRadius * 0.15, outerRadius * 0.15,
+      rollerRadius * 0.5, rollerRadius * 0.5,
       0, 0, 1,
       toothTipRight.x, toothTipRight.y
     ) + ' ';
 
-    // Draw right flank of tooth (down to gullet)
-    pathData += `L ${toothFlankRight.x.toFixed(4)} ${toothFlankRight.y.toFixed(4)} `;
+    // Draw right flank of tooth (from tip down to base)
+    pathData += `L ${toothBaseRight.x.toFixed(4)} ${toothBaseRight.y.toFixed(4)} `;
 
-    // Draw gullet arc (curved bottom that seats the roller)
+    // Calculate gullet arc endpoints
+    const gulletStartAngle = gulletAngle - Math.PI + 0.3;
+    const gulletEndAngle = gulletAngle + Math.PI - 0.3;
+
+    const gulletStart = pointOnCircle(gulletCenter.x, gulletCenter.y, rollerRadius, gulletStartAngle);
+    const gulletEnd = pointOnCircle(gulletCenter.x, gulletCenter.y, rollerRadius, gulletEndAngle);
+
+    // Line to gullet start
+    pathData += `L ${gulletStart.x.toFixed(4)} ${gulletStart.y.toFixed(4)} `;
+
+    // Draw the gullet arc (curved seat for the film perforation)
     pathData += arcCommand(
-      gulletRadius, gulletRadius,
-      0, 0, 1,
-      nextToothFlankLeft.x, nextToothFlankLeft.y
+      rollerRadius, rollerRadius,
+      0, 1, 1,
+      gulletEnd.x, gulletEnd.y
     ) + ' ';
 
-    // Draw left flank of next tooth (up from gullet)
-    const nextToothTipLeft = pointOnCircle(
-      centerX, centerY,
-      outerRadius,
-      nextAngle - halfToothAngle * 0.35
-    );
+    // Get next tooth's base left point
+    const nextToothAngle = (i + 1) * angleStep - Math.PI / 2;
+    const nextToothBaseLeft = pointOnCircle(centerX, centerY, baseRadius, nextToothAngle - halfToothAngle);
+
+    // Line to next tooth base
+    pathData += `L ${nextToothBaseLeft.x.toFixed(4)} ${nextToothBaseLeft.y.toFixed(4)} `;
+
+    // Line up to next tooth tip
+    const nextToothTipLeft = pointOnCircle(centerX, centerY, outerRadius, nextToothAngle - halfToothAngle * tipNarrowFactor);
     pathData += `L ${nextToothTipLeft.x.toFixed(4)} ${nextToothTipLeft.y.toFixed(4)} `;
   }
 
-  // Close the outer path
+  // Close the path
   pathData += 'Z';
 
   return {
@@ -208,7 +223,9 @@ export function generateSprocketPath(params) {
       rootDiameter,
       pitchRadius,
       outerRadius,
-      rootRadius
+      rootRadius: rootRadius,
+      baseRadius,
+      toothHeight
     }
   };
 }
