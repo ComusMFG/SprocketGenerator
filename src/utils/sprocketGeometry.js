@@ -2,12 +2,27 @@
  * Sprocket Geometry Calculator
  *
  * Implements standard sprocket geometry formulas for film transport mechanisms.
+ * Based on reference: https://github.com/Project487/make_sprocket
  * All calculations are in millimeters internally.
  */
 
 /**
+ * Calculate the Hub Radius
+ * Formula: r = (n * pitch) / (2 * PI)
+ * This places teeth at the correct spacing around the circumference
+ *
+ * @param {number} pitch - Film pitch (distance between perforation centers) in mm
+ * @param {number} numTeeth - Number of teeth on the sprocket
+ * @returns {number} Hub radius in mm
+ */
+export function calculateHubRadius(pitch, numTeeth) {
+  if (numTeeth < 3) return 0;
+  return (numTeeth * pitch) / (2 * Math.PI);
+}
+
+/**
  * Calculate the Pitch Diameter (PD)
- * Formula: PD = P / sin(180/N)
+ * Uses the hub radius formula: PD = (n * pitch) / PI
  *
  * @param {number} pitch - Film pitch (distance between perforation centers) in mm
  * @param {number} numTeeth - Number of teeth on the sprocket
@@ -15,8 +30,7 @@
  */
 export function calculatePitchDiameter(pitch, numTeeth) {
   if (numTeeth < 3) return 0;
-  const angleRad = (Math.PI / numTeeth);
-  return pitch / Math.sin(angleRad);
+  return (numTeeth * pitch) / Math.PI;
 }
 
 /**
@@ -93,15 +107,16 @@ export function arcCommand(rx, ry, xAxisRotation, largeArcFlag, sweepFlag, x, y)
 }
 
 /**
- * Generate the complete sprocket tooth profile with proper protruding teeth
+ * Generate the complete sprocket tooth profile
  *
- * Film sprocket teeth are pins that extend outward to engage with film perforations.
- * The tooth height should be significant enough to properly engage the film.
+ * Based on reference: https://github.com/Project487/make_sprocket
+ * Film sprocket teeth are rectangular pins that extend outward from the hub.
+ * The hub radius is calculated so teeth are spaced at the film pitch distance.
  *
  * @param {Object} params - Sprocket parameters
  * @param {number} params.numTeeth - Number of teeth
  * @param {number} params.pitch - Film pitch in mm
- * @param {number} params.rollerDiameter - Roller/pin diameter in mm
+ * @param {number} params.rollerDiameter - Tooth width (matches film perforation) in mm
  * @param {number} params.boreDiameter - Center bore diameter in mm
  * @returns {Object} SVG path data and calculated dimensions
  */
@@ -112,29 +127,35 @@ export function generateSprocketPath(params) {
     return { path: '', dimensions: null };
   }
 
-  const pitchDiameter = calculatePitchDiameter(pitch, numTeeth);
-  const pitchRadius = pitchDiameter / 2;
-  const rollerRadius = rollerDiameter / 2;
+  // Hub radius: places teeth at correct pitch spacing around circumference
+  const hubRadius = calculateHubRadius(pitch, numTeeth);
 
-  // Tooth dimensions
-  const toothHeight = rollerDiameter * 2.0; // Height of tooth above base
+  // Tooth dimensions based on reference project
+  // Tooth height scales with pitch (approximately 0.47 * pitch for 8mm film)
+  const toothHeight = pitch * 0.47;
+  // Tooth width at base (roller diameter represents perforation engagement width)
+  const toothWidth = rollerDiameter * 1.2;
 
   // Key radii
-  const baseRadius = pitchRadius - rollerRadius * 0.5; // Main body radius
-  const outerRadius = baseRadius + toothHeight; // Tip of teeth
-  const rootRadius = baseRadius - rollerRadius * 1.2; // Bottom of gullet
+  const outerRadius = hubRadius + toothHeight; // Tip of teeth
+  const pitchRadius = hubRadius; // Where film contacts
 
   const outerDiameter = outerRadius * 2;
-  const rootDiameter = rootRadius * 2;
+  const pitchDiameter = pitchRadius * 2;
+  const rootDiameter = hubRadius * 2;
 
   const centerX = 0;
   const centerY = 0;
 
   const angleStep = (2 * Math.PI) / numTeeth;
 
-  // Tooth width as a fraction of spacing between teeth
-  const toothWidthFraction = 0.30;
-  const halfToothAngle = (angleStep * toothWidthFraction) / 2;
+  // Calculate tooth angular width based on physical tooth width
+  // Arc length = radius * angle, so angle = arc length / radius
+  const toothAngularWidth = toothWidth / hubRadius;
+  const halfToothAngle = toothAngularWidth / 2;
+
+  // Taper factor - teeth are slightly narrower at tip
+  const tipTaperFactor = 0.75;
 
   let pathData = '';
 
@@ -142,53 +163,41 @@ export function generateSprocketPath(params) {
     // Angle to the center of this tooth
     const toothAngle = i * angleStep - Math.PI / 2; // Start from top
 
-    // Angle to the midpoint between this tooth and the next (gullet center)
-    const gulletAngle = toothAngle + angleStep / 2;
+    // Tooth base points (at hub radius)
+    const toothBaseLeft = pointOnCircle(centerX, centerY, hubRadius, toothAngle - halfToothAngle);
+    const toothBaseRight = pointOnCircle(centerX, centerY, hubRadius, toothAngle + halfToothAngle);
 
-    // Tooth tip points (outer edge) - narrower at tip
-    const tipNarrowFactor = 0.6;
-    const toothTipLeft = pointOnCircle(centerX, centerY, outerRadius, toothAngle - halfToothAngle * tipNarrowFactor);
-    const toothTipRight = pointOnCircle(centerX, centerY, outerRadius, toothAngle + halfToothAngle * tipNarrowFactor);
-
-    // Tooth base points (where tooth meets body)
-    const toothBaseLeft = pointOnCircle(centerX, centerY, baseRadius, toothAngle - halfToothAngle);
-    const toothBaseRight = pointOnCircle(centerX, centerY, baseRadius, toothAngle + halfToothAngle);
-
-    // Gullet bottom point (deepest part between teeth)
-    const gulletBottom = pointOnCircle(centerX, centerY, rootRadius, gulletAngle);
+    // Tooth tip points (at outer radius) - tapered inward
+    const toothTipLeft = pointOnCircle(centerX, centerY, outerRadius, toothAngle - halfToothAngle * tipTaperFactor);
+    const toothTipRight = pointOnCircle(centerX, centerY, outerRadius, toothAngle + halfToothAngle * tipTaperFactor);
 
     // Next tooth's base left point
     const nextToothAngle = ((i + 1) % numTeeth) * angleStep - Math.PI / 2;
-    const nextToothBaseLeft = pointOnCircle(centerX, centerY, baseRadius, nextToothAngle - halfToothAngle);
+    const nextToothBaseLeft = pointOnCircle(centerX, centerY, hubRadius, nextToothAngle - halfToothAngle);
 
     if (i === 0) {
-      // Start at the left flank of the first tooth (at base level)
+      // Start at the base of the first tooth (left side)
       pathData = `M ${toothBaseLeft.x.toFixed(4)} ${toothBaseLeft.y.toFixed(4)} `;
     }
 
-    // Draw left flank of tooth (up from base to tip)
+    // Draw left flank of tooth (straight line up to tip)
     pathData += `L ${toothTipLeft.x.toFixed(4)} ${toothTipLeft.y.toFixed(4)} `;
 
-    // Draw rounded tooth tip
+    // Draw tooth tip (small arc for rounded top)
+    const tipRadius = toothWidth * tipTaperFactor * 0.3;
     pathData += arcCommand(
-      rollerRadius * 0.4, rollerRadius * 0.4,
+      tipRadius, tipRadius,
       0, 0, 1,
       toothTipRight.x, toothTipRight.y
     ) + ' ';
 
-    // Draw right flank of tooth (down from tip to base)
+    // Draw right flank of tooth (straight line down to base)
     pathData += `L ${toothBaseRight.x.toFixed(4)} ${toothBaseRight.y.toFixed(4)} `;
 
-    // Draw gullet curve (arc going inward to gullet bottom, then to next tooth)
-    // Use a smooth arc that passes through the gullet bottom
+    // Draw gullet (arc along the hub radius to next tooth)
+    // This is the curved surface between teeth where the film sits
     pathData += arcCommand(
-      rollerRadius * 1.5, rollerRadius * 1.5,
-      0, 0, 1,
-      gulletBottom.x, gulletBottom.y
-    ) + ' ';
-
-    pathData += arcCommand(
-      rollerRadius * 1.5, rollerRadius * 1.5,
+      hubRadius, hubRadius,
       0, 0, 1,
       nextToothBaseLeft.x, nextToothBaseLeft.y
     ) + ' ';
@@ -206,9 +215,9 @@ export function generateSprocketPath(params) {
       rootDiameter,
       pitchRadius,
       outerRadius,
-      rootRadius,
-      baseRadius,
-      toothHeight
+      hubRadius,
+      toothHeight,
+      toothWidth
     }
   };
 }
